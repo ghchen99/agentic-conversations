@@ -37,9 +37,8 @@ The system leverages OpenAI's Azure API for natural language processing and demo
 ## **Code Structure**
 ```
 ├── main.py                     # Entry point for the application.
-├── autogen_ext/models/         # Azure OpenAI integration components.
-├── autogen_agentchat/          # Agent and chat management modules.
-├── autogen_agentchat/ui/       # Console interface for output streaming.
+├── .env                        # Environment variables.
+├── requirements.txt            # Required libraries.
 └── README.md                   # Project documentation.
 ```
 
