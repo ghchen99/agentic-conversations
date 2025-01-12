@@ -128,7 +128,7 @@ class ConversationManager:
         
         return response.choices[0].message.content
 
-    async def run_conversation(self, profession: str, num_turns: int = 5) -> List[Dict[str, str]]:
+    async def run_conversation(self, profession: str, num_turns: int = 10) -> List[Dict[str, str]]:
         """Run a conversation between the AI expert and professional with natural flow"""
         ai_prompt, prof_prompt = self.prompt_generator.create_conversation_prompts(profession)
         conversation = []
