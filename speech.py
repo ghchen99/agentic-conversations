@@ -1,6 +1,5 @@
 import os
 import json
-import wave
 import azure.cognitiveservices.speech as speechsdk
 from datetime import datetime
 
@@ -12,7 +11,13 @@ def setup_speech_config():
     if not speech_key or not speech_region:
         raise ValueError("Please set AZURE_SPEECH_KEY and AZURE_SPEECH_REGION environment variables")
     
-    return speechsdk.SpeechConfig(subscription=speech_key, region=speech_region)
+    speech_config = speechsdk.SpeechConfig(subscription=speech_key, region=speech_region)
+    # Configure for MP3 output
+    speech_config.set_speech_synthesis_output_format(
+        speechsdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3
+    )
+    
+    return speech_config
 
 def get_voice_by_role(role):
     """Map conversation roles to specific voices"""
@@ -57,22 +62,21 @@ def generate_ssml_with_pauses(messages):
     ssml += '</speak>'
     return ssml
 
-def combine_wav_files(wav_files, output_file):
-    """Combine multiple WAV files into a single file"""
-    if not wav_files:
+def combine_mp3_files(mp3_files, output_file):
+    """Combine multiple MP3 files into a single file"""
+    if not mp3_files:
         return False
         
-    with wave.open(wav_files[0], 'rb') as first_wav:
-        params = first_wav.getparams()
-        
-    with wave.open(output_file, 'wb') as output_wav:
-        output_wav.setparams(params)
-        
-        for wav_file in wav_files:
-            with wave.open(wav_file, 'rb') as wav:
-                output_wav.writeframes(wav.readframes(wav.getnframes()))
-    
-    return True
+    try:
+        # Read the content of all MP3 files
+        with open(output_file, 'wb') as outfile:
+            for mp3_file in mp3_files:
+                with open(mp3_file, 'rb') as infile:
+                    outfile.write(infile.read())
+        return True
+    except Exception as e:
+        print(f"Error combining MP3 files: {str(e)}")
+        return False
 
 def generate_podcast_audio(conversation_file):
     """Generate a single podcast audio file from a JSON conversation file"""
@@ -87,7 +91,7 @@ def generate_podcast_audio(conversation_file):
         # Generate filename using profession and timestamp
         timestamp = conversation_data.get("timestamp", datetime.now().strftime("%Y%m%d_%H%M%S"))
         profession = conversation_data.get("profession", "unknown")
-        final_audio_filename = os.path.join(output_dir, f"podcast_{profession}_{timestamp}.wav")
+        final_audio_filename = os.path.join(output_dir, f"podcast_{profession}_{timestamp}.mp3")
         
         print(f"\nGenerating podcast audio: {final_audio_filename}")
         
@@ -99,13 +103,13 @@ def generate_podcast_audio(conversation_file):
         chunk_size = estimate_chunk_size(messages)
         message_chunks = [messages[i:i + chunk_size] for i in range(0, len(messages), chunk_size)]
         
-        temp_wav_files = []
+        temp_mp3_files = []
         successful_chunks = 0
         
         # Process each chunk
         for chunk_index, message_chunk in enumerate(message_chunks):
-            temp_filename = os.path.join(output_dir, f"temp_chunk_{chunk_index}_{timestamp}.wav")
-            temp_wav_files.append(temp_filename)
+            temp_filename = os.path.join(output_dir, f"temp_chunk_{chunk_index}_{timestamp}.mp3")
+            temp_mp3_files.append(temp_filename)
             
             # Configure audio output for this chunk
             audio_config = speechsdk.audio.AudioOutputConfig(filename=temp_filename)
@@ -131,12 +135,12 @@ def generate_podcast_audio(conversation_file):
                 print(f"× Chunk {chunk_index + 1} failed: {result.cancellation_details.error_details}")
                 if os.path.exists(temp_filename):
                     os.remove(temp_filename)
-                temp_wav_files.remove(temp_filename)
+                temp_mp3_files.remove(temp_filename)
         
         if successful_chunks > 0:
             # Combine all chunks into final audio file
             print("Combining audio chunks...")
-            if combine_wav_files(temp_wav_files, final_audio_filename):
+            if combine_mp3_files(temp_mp3_files, final_audio_filename):
                 print(f"✓ Successfully generated podcast audio: {final_audio_filename}")
             else:
                 print("× Failed to combine audio chunks")
@@ -146,7 +150,7 @@ def generate_podcast_audio(conversation_file):
             return None
         
         # Clean up temporary files
-        for temp_file in temp_wav_files:
+        for temp_file in temp_mp3_files:
             try:
                 os.remove(temp_file)
             except Exception as e:
