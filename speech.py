@@ -1,184 +1,189 @@
 import os
 import json
-import asyncio
-import logging
-from pathlib import Path
+import wave
 import azure.cognitiveservices.speech as speechsdk
-from typing import Dict, List
+from datetime import datetime
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('tts_generation.log'),
-        logging.StreamHandler()
-    ]
-)
+def setup_speech_config():
+    """Initialize Azure Speech Service configuration"""
+    speech_key = os.environ.get('AZURE_SPEECH_KEY')
+    speech_region = os.environ.get('AZURE_SPEECH_REGION')
+    
+    if not speech_key or not speech_region:
+        raise ValueError("Please set AZURE_SPEECH_KEY and AZURE_SPEECH_REGION environment variables")
+    
+    return speechsdk.SpeechConfig(subscription=speech_key, region=speech_region)
 
-logger = logging.getLogger(__name__)
+def get_voice_by_role(role):
+    """Map conversation roles to specific voices"""
+    voice_mapping = {
+        "AI Expert": "en-US-GuyNeural",  
+        "chef": "en-US-TonyNeural",         
+        "nurse": "en-US-JennyNeural",       
+        "teacher": "en-US-NancyNeural"      
+    }
+    return voice_mapping.get(role, "en-US-JennyNeural")  # Default voice
 
-class PodcastTTSGenerator:
-    def __init__(self, speech_key: str, speech_region: str):
-        """Initialize the TTS generator with Azure credentials"""
-        self.speech_key = speech_key
-        self.speech_region = speech_region
+def create_output_directory():
+    """Create output directory for audio files"""
+    output_dir = "podcast_audio"
+    os.makedirs(output_dir, exist_ok=True)
+    return output_dir
+
+def estimate_chunk_size(messages, target_chars=2000):
+    """Estimate number of messages that fit within character limit"""
+    total_chars = 0
+    for idx, msg in enumerate(messages):
+        total_chars += len(msg["content"])
+        if total_chars >= target_chars:
+            return max(1, idx)  # Ensure at least one message per chunk
+    return len(messages)
+
+def generate_ssml_with_pauses(messages):
+    """Generate SSML with voice switching and pauses"""
+    ssml = (
+        '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
+        'xmlns:mstts="http://www.w3.org/2001/mstts" xml:lang="en-US">'
+    )
+    
+    for index, message in enumerate(messages):
+        voice_name = get_voice_by_role(message["role"])
+        ssml += f'<voice name="{voice_name}">'
+        ssml += f'{message["content"]}'
+        if index < len(messages) - 1:
+            ssml += '<break time="300ms"/>'
+        ssml += '</voice>'
+    
+    ssml += '</speak>'
+    return ssml
+
+def combine_wav_files(wav_files, output_file):
+    """Combine multiple WAV files into a single file"""
+    if not wav_files:
+        return False
         
-        # Define voice profiles for different roles
-        self.voice_profiles = {
-            "AI Expert": {
-                "name": "en-US-DavisNeural",
-                "style": "friendly"
-            },
-            "chef": {
-                "name": "en-US-JasonNeural",
-                "style": "casual"
-            },
-            "teacher": {
-                "name": "en-US-JennyNeural",
-                "style": "friendly"
-            },
-            "nurse": {
-                "name": "en-US-AmberNeural",
-                "style": "professional"
-            }
-        }
+    with wave.open(wav_files[0], 'rb') as first_wav:
+        params = first_wav.getparams()
+        
+    with wave.open(output_file, 'wb') as output_wav:
+        output_wav.setparams(params)
+        
+        for wav_file in wav_files:
+            with wave.open(wav_file, 'rb') as wav:
+                output_wav.writeframes(wav.readframes(wav.getnframes()))
+    
+    return True
+
+def generate_podcast_audio(conversation_file):
+    """Generate a single podcast audio file from a JSON conversation file"""
+    try:
+        # Read and parse the JSON file
+        with open(conversation_file, 'r') as f:
+            conversation_data = json.load(f)
         
         # Create output directory
-        self.output_dir = Path("podcast_audio")
-        self.output_dir.mkdir(exist_ok=True)
-
-    def _create_speech_config(self, voice_name: str) -> speechsdk.SpeechConfig:
-        """Create speech configuration with specific voice settings"""
-        speech_config = speechsdk.SpeechConfig(
-            subscription=self.speech_key,
-            region=self.speech_region
-        )
-        speech_config.speech_synthesis_voice_name = voice_name
-        return speech_config
-
-    async def synthesize_message(
-        self,
-        text: str,
-        role: str,
-        output_path: str
-    ) -> None:
-        """Synthesize a single message to audio file"""
-        try:
-            # Get voice profile based on role
-            voice_profile = self.voice_profiles.get(
-                role,
-                self.voice_profiles["AI Expert"]  # default fallback
-            )
+        output_dir = create_output_directory()
+        
+        # Generate filename using profession and timestamp
+        timestamp = conversation_data.get("timestamp", datetime.now().strftime("%Y%m%d_%H%M%S"))
+        profession = conversation_data.get("profession", "unknown")
+        final_audio_filename = os.path.join(output_dir, f"podcast_{profession}_{timestamp}.wav")
+        
+        print(f"\nGenerating podcast audio: {final_audio_filename}")
+        
+        # Setup speech configuration
+        speech_config = setup_speech_config()
+        
+        # Split messages into chunks based on content length
+        messages = conversation_data["messages"]
+        chunk_size = estimate_chunk_size(messages)
+        message_chunks = [messages[i:i + chunk_size] for i in range(0, len(messages), chunk_size)]
+        
+        temp_wav_files = []
+        successful_chunks = 0
+        
+        # Process each chunk
+        for chunk_index, message_chunk in enumerate(message_chunks):
+            temp_filename = os.path.join(output_dir, f"temp_chunk_{chunk_index}_{timestamp}.wav")
+            temp_wav_files.append(temp_filename)
             
-            speech_config = self._create_speech_config(voice_profile["name"])
-            
-            # Configure audio output
-            audio_config = speechsdk.AudioConfig(filename=output_path)
+            # Configure audio output for this chunk
+            audio_config = speechsdk.audio.AudioOutputConfig(filename=temp_filename)
             
             # Create synthesizer
-            synthesizer = speechsdk.SpeechSynthesizer(
-                speech_config=speech_config,
+            speech_synthesizer = speechsdk.SpeechSynthesizer(
+                speech_config=speech_config, 
                 audio_config=audio_config
             )
             
-            # Add SSML markup for style
-            ssml_text = f"""
-            <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis"
-                   xmlns:mstts="http://www.w3.org/2001/mstts" xml:lang="en-US">
-                <voice name="{voice_profile['name']}">
-                    <mstts:express-as style="{voice_profile['style']}">
-                        {text}
-                    </mstts:express-as>
-                </voice>
-            </speak>
-            """
+            # Generate SSML for this chunk
+            ssml = generate_ssml_with_pauses(message_chunk)
             
-            # Synthesize speech
-            result = await asyncio.to_thread(
-                synthesizer.speak_ssml_async,
-                ssml_text
-            )
+            print(f"Processing chunk {chunk_index + 1} of {len(message_chunks)}...")
+            
+            # Synthesize this chunk
+            result = speech_synthesizer.speak_ssml_async(ssml).get()
             
             if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-                logger.info(f"Speech synthesized for text [{text[:50]}...] and saved to [{output_path}]")
+                successful_chunks += 1
+                print(f"✓ Chunk {chunk_index + 1} completed successfully")
             else:
-                logger.error(f"Speech synthesis failed: {result.reason}")
-                
-        except Exception as e:
-            logger.error(f"Error synthesizing speech: {str(e)}")
-            raise
-
-    async def process_conversation(self, transcript_path: Path) -> None:
-        """Process entire conversation transcript and generate audio files"""
-        try:
-            # Load conversation transcript
-            with open(transcript_path, 'r', encoding='utf-8') as f:
-                conversation_data = json.load(f)
-            
-            profession = conversation_data["profession"]
-            timestamp = conversation_data["timestamp"]
-            
-            # Create output directory for this conversation
-            conversation_dir = self.output_dir / f"{profession}_{timestamp}"
-            conversation_dir.mkdir(exist_ok=True)
-            
-            # Process each message
-            for idx, message in enumerate(conversation_data["messages"]):
-                output_filename = f"{idx:03d}_{message['role'].lower()}.wav"
-                output_path = str(conversation_dir / output_filename)
-                
-                await self.synthesize_message(
-                    text=message["content"],
-                    role=message["role"],
-                    output_path=output_path
-                )
-                
-                # Add small delay between requests
-                await asyncio.sleep(0.5)
-            
-            logger.info(f"Completed processing conversation: {transcript_path}")
-            
-        except Exception as e:
-            logger.error(f"Error processing conversation {transcript_path}: {str(e)}")
-            raise
-
-async def main():
-    # Load Azure credentials from environment variables
-    speech_key = os.getenv("AZURE_SPEECH_KEY")
-    speech_region = os.getenv("AZURE_SPEECH_REGION")
-    
-    if not speech_key or not speech_region:
-        raise ValueError("Azure Speech credentials not found in environment variables")
-    
-    try:
-        # Initialize TTS generator
-        tts_generator = PodcastTTSGenerator(
-            speech_key=speech_key,
-            speech_region=speech_region
-        )
+                print(f"× Chunk {chunk_index + 1} failed: {result.cancellation_details.error_details}")
+                if os.path.exists(temp_filename):
+                    os.remove(temp_filename)
+                temp_wav_files.remove(temp_filename)
         
-        # Process all conversation transcripts in the conversations directory
-        conversations_dir = Path("conversations")
-        if not conversations_dir.exists():
-            raise FileNotFoundError("Conversations directory not found")
+        if successful_chunks > 0:
+            # Combine all chunks into final audio file
+            print("Combining audio chunks...")
+            if combine_wav_files(temp_wav_files, final_audio_filename):
+                print(f"✓ Successfully generated podcast audio: {final_audio_filename}")
+            else:
+                print("× Failed to combine audio chunks")
+                return None
+        else:
+            print("× No chunks were successfully processed")
+            return None
         
-        # Get all JSON files in conversations directory
-        transcript_files = list(conversations_dir.glob("*.json"))
+        # Clean up temporary files
+        for temp_file in temp_wav_files:
+            try:
+                os.remove(temp_file)
+            except Exception as e:
+                print(f"Warning: Could not delete temporary file {temp_file}: {str(e)}")
         
-        if not transcript_files:
-            logger.warning("No conversation transcripts found")
-            return
-        
-        # Process each transcript
-        for transcript_path in transcript_files:
-            logger.info(f"Processing transcript: {transcript_path}")
-            await tts_generator.process_conversation(transcript_path)
+        return final_audio_filename if successful_chunks > 0 else None
             
-        logger.info("Completed processing all conversations")
-        
     except Exception as e:
-        logger.error(f"Error in main function: {str(e)}", exc_info=True)
-        raise
+        print(f"An unexpected error occurred: {str(e)}")
+        return None
+
+def process_conversation_directory(directory_path):
+    """Process all JSON files in the specified directory"""
+    try:
+        generated_files = []
+        for filename in os.listdir(directory_path):
+            if filename.endswith('.json'):
+                full_path = os.path.join(directory_path, filename)
+                print(f"\nProcessing conversation file: {filename}")
+                output_file = generate_podcast_audio(full_path)
+                if output_file:
+                    generated_files.append(output_file)
+        
+        return generated_files
+    except Exception as e:
+        print(f"Error processing directory: {str(e)}")
+        return []
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Get the conversations directory path
+    conversations_dir = "conversations"
+    
+    if os.path.isdir(conversations_dir):
+        generated_files = process_conversation_directory(conversations_dir)
+        if generated_files:
+            print("\nProcessing complete! Podcast audio files have been saved:")
+            for file in generated_files:
+                print(f"- {file}")
+    else:
+        print("Error: Invalid directory path")
