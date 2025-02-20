@@ -35,14 +35,29 @@ def create_output_directory():
     os.makedirs(output_dir, exist_ok=True)
     return output_dir
 
-def estimate_chunk_size(messages, target_chars=2000):
+def estimate_chunk_size(messages, target_chars=6000):
     """Estimate number of messages that fit within character limit"""
     total_chars = 0
+    ssml_overhead = len('<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="http://www.w3.org/2001/mstts" xml:lang="en-US"></speak>')
+    
     for idx, msg in enumerate(messages):
-        total_chars += len(msg["content"])
-        if total_chars >= target_chars:
+        # Calculate SSML overhead for this message
+        voice_tag_overhead = len(f'<voice name="{get_voice_by_role(msg["role"])}"></voice>')
+        break_overhead = len('<break time="300ms"/>') if idx < len(messages) - 1 else 0
+        message_total = len(msg["content"]) + voice_tag_overhead + break_overhead
+        
+        # Check if adding this message would exceed SSML limit
+        if total_chars + message_total + ssml_overhead >= 10000:
             return max(1, idx)  # Ensure at least one message per chunk
+            
+        total_chars += message_total
+        
+        # Check if we've hit our target (but still under SSML limit)
+        if total_chars >= target_chars:
+            return max(1, idx + 1)
+    
     return len(messages)
+
 
 def generate_ssml_with_pauses(messages):
     """Generate SSML with voice switching and pauses"""
