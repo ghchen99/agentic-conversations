@@ -3,6 +3,7 @@ import json
 import azure.cognitiveservices.speech as speechsdk
 from datetime import datetime
 
+
 def setup_speech_config():
     """Initialize Azure Speech Service configuration"""
     speech_key = os.environ.get('AZURE_SPEECH_KEY')
@@ -12,22 +13,113 @@ def setup_speech_config():
         raise ValueError("Please set AZURE_SPEECH_KEY and AZURE_SPEECH_REGION environment variables")
     
     speech_config = speechsdk.SpeechConfig(subscription=speech_key, region=speech_region)
-    # Configure for MP3 output
     speech_config.set_speech_synthesis_output_format(
         speechsdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3
     )
     
     return speech_config
 
-def get_voice_by_role(role):
-    """Map conversation roles to specific voices"""
-    voice_mapping = {
-        "AI Expert": "en-US-GuyNeural",  
-        "chef": "en-US-TonyNeural",         
-        "nurse": "en-US-JennyNeural",       
-        "teacher": "en-US-NancyNeural"      
+def get_voice_settings_by_role(role):
+    """Map conversation roles to specific voices and their characteristics"""
+    voice_settings = {
+        "AI Expert": {
+            "voice": "en-IN-AaravNeural",
+            "style": "natural",
+            "rate": "1.2",
+            "pitch": "0Hz",
+            "contour": "(50%, +2%)"
+        },
+        "chef": {
+            "voice": "en-NZ-MitchellNeural",
+            "style": "natural",
+            "rate": "1.05",
+            "pitch": "0Hz",
+            "contour": "(50%, +2%)"
+        },
+        "nurse": {
+            "voice": "en-PH-RosaNeural",
+            "style": "empathetic",
+            "rate": "1.05",
+            "pitch": "+1Hz",
+            "contour": "(50%, +2%)"
+        },
+        "teacher": {
+            "voice": "en-NG-EzinneNeural",
+            "style": "natural",
+            "rate": "1.05",
+            "pitch": "0Hz",
+            "contour": "(50%, +2%)"
+        }
     }
-    return voice_mapping.get(role, "en-US-JennyNeural")  # Default voice
+    return voice_settings.get(role, {
+        "voice": "en-US-JennyNeural",
+        "style": "professional",
+        "rate": "1.0",
+        "pitch": "0Hz",
+        "contour": "(50%, +10%)"
+    })
+
+def add_natural_pauses(text):
+    """Add subtle pauses based on punctuation and content"""
+    # Add moderate pauses for paragraph breaks
+    text = text.replace("\n\n", '\n<break time="400ms"/>\n')
+    
+    # Add brief pauses for sentence endings
+    text = text.replace(". ", '.<break time="250ms"/> ')
+    text = text.replace("! ", '!<break time="250ms"/> ')
+    text = text.replace("? ", '?<break time="250ms"/> ')
+    
+    # Add minimal pauses for commas and semicolons
+    text = text.replace(", ", ',<break time="100ms"/> ')
+    text = text.replace("; ", ';<break time="150ms"/> ')
+    
+    return text
+
+def add_emphasis_and_intonation(text):
+    """Add emphasis and intonation markers to make speech more natural"""
+    # Emphasize questions
+    text = text.replace("?", '<prosody pitch="+15Hz">?</prosody>')
+    
+    # Add emphasis to important words (this is a simple example - could be more sophisticated)
+    emphasis_words = ["important", "crucial", "significant", "never", "always", "must"]
+    for word in emphasis_words:
+        text = text.replace(f" {word} ", f' <prosody rate="0.9" pitch="+10Hz">{word}</prosody> ')
+    
+    return text
+
+def generate_ssml_with_enhanced_speech(messages):
+    """Generate SSML with advanced voice control for more natural speech"""
+    ssml = (
+        '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
+        'xmlns:mstts="http://www.w3.org/2001/mstts" xml:lang="en-US">'
+    )
+    
+    for index, message in enumerate(messages):
+        settings = get_voice_settings_by_role(message["role"])
+        
+        # Start voice configuration
+        ssml += f'<voice name="{settings["voice"]}">'
+        
+        # Add style and prosody settings
+        ssml += f'<mstts:express-as style="{settings["style"]}" styledegree="1.5">'
+        ssml += f'<prosody rate="{settings["rate"]}" pitch="{settings["pitch"]}" contour="{settings["contour"]}">'
+        
+        # Process the content for more natural speech
+        content = add_natural_pauses(message["content"])
+        content = add_emphasis_and_intonation(content)
+        ssml += content
+        
+        # Close all tags
+        ssml += '</prosody></mstts:express-as>'
+        
+        # Add pause between speakers
+        if index < len(messages) - 1:
+            ssml += '<break time="750ms"/>'
+        
+        ssml += '</voice>'
+    
+    ssml += '</speak>'
+    return ssml
 
 def create_output_directory():
     """Create output directory for audio files"""
@@ -35,32 +127,28 @@ def create_output_directory():
     os.makedirs(output_dir, exist_ok=True)
     return output_dir
 
-def estimate_chunk_size(messages, target_chars=2000):
+def estimate_chunk_size(messages, target_chars=6000):
     """Estimate number of messages that fit within character limit"""
     total_chars = 0
+    ssml_overhead = len('<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="http://www.w3.org/2001/mstts" xml:lang="en-US"></speak>')
+    
     for idx, msg in enumerate(messages):
-        total_chars += len(msg["content"])
-        if total_chars >= target_chars:
+        # Calculate SSML overhead for this message
+        voice_tag_overhead = len(f'<voice name="{get_voice_settings_by_role(msg["role"])}"></voice>')
+        break_overhead = len('<break time="300ms"/>') if idx < len(messages) - 1 else 0
+        message_total = len(msg["content"]) + voice_tag_overhead + break_overhead
+        
+        # Check if adding this message would exceed SSML limit
+        if total_chars + message_total + ssml_overhead >= 10000:
             return max(1, idx)  # Ensure at least one message per chunk
+            
+        total_chars += message_total
+        
+        # Check if we've hit our target (but still under SSML limit)
+        if total_chars >= target_chars:
+            return max(1, idx + 1)
+    
     return len(messages)
-
-def generate_ssml_with_pauses(messages):
-    """Generate SSML with voice switching and pauses"""
-    ssml = (
-        '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
-        'xmlns:mstts="http://www.w3.org/2001/mstts" xml:lang="en-US">'
-    )
-    
-    for index, message in enumerate(messages):
-        voice_name = get_voice_by_role(message["role"])
-        ssml += f'<voice name="{voice_name}">'
-        ssml += f'{message["content"]}'
-        if index < len(messages) - 1:
-            ssml += '<break time="300ms"/>'
-        ssml += '</voice>'
-    
-    ssml += '</speak>'
-    return ssml
 
 def combine_mp3_files(mp3_files, output_file):
     """Combine multiple MP3 files into a single file"""
@@ -121,7 +209,7 @@ def generate_podcast_audio(conversation_file):
             )
             
             # Generate SSML for this chunk
-            ssml = generate_ssml_with_pauses(message_chunk)
+            ssml = generate_ssml_with_enhanced_speech(message_chunk)
             
             print(f"Processing chunk {chunk_index + 1} of {len(message_chunks)}...")
             

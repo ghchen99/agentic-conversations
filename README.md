@@ -4,6 +4,8 @@
 
 This project automates the creation of 20-minute podcast episodes featuring dynamic conversations between an AI expert and various professionals (chefs, teachers, nurses) about AI's impact on their work. Using Azure OpenAI for dialogue generation and Azure Speech Services for voice synthesis, it produces natural-sounding podcast episodes complete with distinct voices for each speaker and professional audio quality. Each episode explores how AI is transforming specific industries through authentic discussions between the host and industry practitioners.
 
+[Check out the `podcast_audio` folder for sample results 🔊](podcast_audio/podcast_nurse_20250210_145400.mp3)
+
 ## Features
 
 * **Automated Conversation Generation**
